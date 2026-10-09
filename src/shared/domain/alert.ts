@@ -5,6 +5,7 @@ import {
   IsoDateSchema,
   IsoDateTimeSchema,
   NonEmptyStringSchema,
+  NonNegativeNumberSchema,
   UnitIntervalSchema,
   UuidSchema,
 } from "./primitives";
@@ -120,3 +121,45 @@ export const ACTIVE_ALERT_STATUSES: readonly AlertStatus[] = ["open", "ack"];
 export function isActiveAlert(alert: Pick<Alert, "status">): boolean {
   return ACTIVE_ALERT_STATUSES.includes(alert.status);
 }
+
+/**
+ * What the AI layer (or the deterministic template) writes for an alert.
+ * `headline` is two plain-language sentences, `why` is grounded only in the
+ * drivers and evidence the generator was given.
+ */
+export const ExplanationSchema = z.object({
+  headline: NonEmptyStringSchema,
+  why: NonEmptyStringSchema,
+  suggestedActions: z.array(SuggestedActionSchema).min(1).max(3),
+});
+export type Explanation = z.infer<typeof ExplanationSchema>;
+
+/** Project facts an explanation may reference. No secrets, no raw records. */
+export const ExplanationProjectContextSchema = z.object({
+  name: NonEmptyStringSchema,
+  clientName: NonEmptyStringSchema,
+  startDate: IsoDateSchema,
+  endDate: IsoDateSchema,
+  budgetAmount: NonNegativeNumberSchema,
+  budgetCurrency: NonEmptyStringSchema,
+});
+export type ExplanationProjectContext = z.infer<
+  typeof ExplanationProjectContextSchema
+>;
+
+/**
+ * Everything an explanation may be built from. It is also the grounding
+ * allow-list: a number, date, or identifier that is not derivable from this
+ * input is treated as invented (see `checkGrounding`).
+ */
+export const AlertExplanationInputSchema = z.object({
+  kind: AlertKindSchema,
+  severity: SeveritySchema,
+  confidence: UnitIntervalSchema,
+  eta: IsoDateSchema.nullable(),
+  title: NonEmptyStringSchema,
+  drivers: z.array(DriverSchema),
+  evidence: EvidenceListSchema,
+  project: ExplanationProjectContextSchema,
+});
+export type AlertExplanationInput = z.infer<typeof AlertExplanationInputSchema>;

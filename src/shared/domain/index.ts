@@ -8,6 +8,7 @@ export * from "./code";
 export * from "./docs";
 export * from "./evidence";
 export * from "./forecast";
+export * from "./grounding";
 export * from "./issue";
 export * from "./issue-keys";
 export * from "./memory";
