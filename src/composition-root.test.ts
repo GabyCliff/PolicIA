@@ -59,6 +59,8 @@ describe("getContainer", () => {
     expect(Object.keys(container).sort()).toEqual([
       "appUrl",
       "clock",
+      "llm",
+      "llmAvailable",
       "mode",
       "model",
       "repo",
@@ -182,6 +184,7 @@ describe("getAppConfig", () => {
       mode: "live",
       model: "claude-opus-5-5",
       appUrl: "https://radar.example.com",
+      llmAvailable: true,
     });
   });
 });

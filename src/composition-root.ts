@@ -5,17 +5,19 @@ import {
   buildDemoDataset,
   createDemoSources,
 } from "@/adapters/demo";
+import { createLlm } from "@/adapters/llm";
 import { systemClock } from "@/adapters/system-clock";
 import {
   createUnavailableRepository,
   createUnavailableSources,
 } from "@/adapters/unavailable";
+import { explainAlerts } from "@/modules/forecast/application/explain-alerts";
 import { runForecasts } from "@/modules/forecast/application/run-forecasts";
 import { buildMemory } from "@/modules/memory/application/build-memory";
 import { syncProjects } from "@/modules/ingestion/application/sync-projects";
 import { getEnv, type Env } from "@/shared/config/env";
 import { toIsoDate } from "@/shared/domain";
-import type { Clock, RadarRepository, SourcePorts } from "@/shared/ports";
+import type { Clock, LlmPort, RadarRepository, SourcePorts } from "@/shared/ports";
 
 /**
  * Composition root.
@@ -43,12 +45,19 @@ export interface AppConfig {
   model: string;
   /** Public base URL of the deployment, when configured. */
   appUrl: string | undefined;
+  /**
+   * Whether an Anthropic API key is configured. False means every AI path
+   * degrades: alert explanations come from the deterministic template and
+   * Ask Radar is disabled with an explanation instead of failing.
+   */
+  llmAvailable: boolean;
 }
 
 export interface Container extends AppConfig {
   clock: Clock;
   repo: RadarRepository;
   sources: SourcePorts;
+  llm: LlmPort;
 }
 
 function toAppConfig(env: Env): AppConfig {
@@ -56,6 +65,7 @@ function toAppConfig(env: Env): AppConfig {
     mode: env.DEMO_MODE ? "demo" : "live",
     model: env.ANTHROPIC_MODEL,
     appUrl: env.NEXT_PUBLIC_APP_URL,
+    llmAvailable: env.ANTHROPIC_API_KEY !== undefined,
   };
 }
 
@@ -76,7 +86,11 @@ export function getAppConfig(): AppConfig {
  * ids are deterministic, so every instance booted on the same day agrees on
  * alert and memory item ids.
  */
-async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Container> {
+async function buildDemoContainer(
+  config: AppConfig,
+  clock: Clock,
+  llm: LlmPort,
+): Promise<Container> {
   const dataset = buildDemoDataset(clock.now());
   const repo = new InMemoryRadarRepository({
     ids: "deterministic",
@@ -117,12 +131,30 @@ async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Cont
     );
   }
 
-  return { ...config, clock, repo, sources };
+  const explanations = await explainAlerts({ repo, clock, llm });
+  const explanationFailures = explanations.projects.filter(
+    (project) => project.error !== null,
+  );
+  if (explanationFailures.length > 0) {
+    throw new Error(
+      `Demo explanations failed: ${explanationFailures
+        .map((project) => `${project.projectName}: ${project.error}`)
+        .join("; ")}`,
+    );
+  }
+
+  return { ...config, clock, repo, sources, llm };
 }
 
-async function buildContainer(config: AppConfig, clock: Clock): Promise<Container> {
+async function buildContainer(
+  config: AppConfig,
+  clock: Clock,
+  env: Env,
+): Promise<Container> {
+  const llm = createLlm({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL });
+
   if (config.mode === "demo") {
-    return buildDemoContainer(config, clock);
+    return buildDemoContainer(config, clock, llm);
   }
 
   // Live mode: Supabase repository and REST source adapters land in phase 9.
@@ -132,6 +164,7 @@ async function buildContainer(config: AppConfig, clock: Clock): Promise<Containe
     clock,
     repo: createUnavailableRepository(),
     sources: createUnavailableSources(),
+    llm,
   };
 }
 
@@ -157,7 +190,13 @@ type GlobalWithContainer = typeof globalThis & {
  */
 function cacheKey(config: AppConfig, clock: Clock): string {
   const day = config.mode === "demo" ? toIsoDate(clock.now()) : "";
-  return JSON.stringify([config.mode, config.model, config.appUrl ?? "", day]);
+  return JSON.stringify([
+    config.mode,
+    config.model,
+    config.appUrl ?? "",
+    config.llmAvailable,
+    day,
+  ]);
 }
 
 /**
@@ -169,9 +208,11 @@ export function getContainer(): Promise<Container> {
   const store = globalThis as GlobalWithContainer;
   const clock = systemClock;
 
+  let env: Env;
   let config: AppConfig;
   try {
-    config = toAppConfig(getEnv());
+    env = getEnv();
+    config = toAppConfig(env);
   } catch (error) {
     return Promise.reject(error);
   }
@@ -182,7 +223,7 @@ export function getContainer(): Promise<Container> {
 
   const entry: CachedContainer = {
     key,
-    promise: buildContainer(config, clock).catch((error: unknown) => {
+    promise: buildContainer(config, clock, env).catch((error: unknown) => {
       if (store[CONTAINER_CACHE] === entry) delete store[CONTAINER_CACHE];
       throw error;
     }),

@@ -67,7 +67,18 @@ function AlertRow({
         {alert.explanation === null ? (
           <p className="text-xs text-muted-foreground italic">AI explanation pending</p>
         ) : (
-          <p className="text-sm text-muted-foreground">{alert.explanation}</p>
+          <div className="space-y-1.5">
+            {/* Headline and why are separated by a blank line (see the
+                explanation use case), so keep the line breaks. */}
+            <p className="text-sm whitespace-pre-line text-muted-foreground">
+              {alert.explanation}
+            </p>
+            {alert.explanationSource === "template" ? (
+              <p className="text-[0.7rem] text-muted-foreground/80">
+                Generated from the detector&apos;s drivers (no model call).
+              </p>
+            ) : null}
+          </div>
         )}
 
         {alert.suggestedActions.length > 0 ? (
