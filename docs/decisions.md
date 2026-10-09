@@ -48,6 +48,10 @@ Lightweight decision log (ADR-lite). Each entry states the decision, why it was 
 | [D-040](#d-040--scope-creep-is-net-growth-over-15-percent) | Scope creep is net growth over 15% of the commitment | Forecast |
 | [D-041](#d-041--flow-signal-thresholds-and-severity-mapping) | Flow signal thresholds and the severity/confidence mapping | Forecast |
 | [D-042](#d-042--alerts-auto-resolve-when-a-conclusive-detector-stops-firing) | Alerts auto-resolve when a conclusive detector stops firing | Alerts |
+| [D-043](#d-043--memory-item-ids-are-derived-not-generated) | Memory item ids are derived, not generated | Memory |
+| [D-044](#d-044--memory-rules-are-deterministic-and-the-llm-is-a-seam) | Memory rules are deterministic and the LLM is a seam | Memory |
+| [D-045](#d-045--the-pending-rule-lives-in-the-summary-prefix) | The pending rule lives in the summary prefix | Memory |
+| [D-046](#d-046--memory-search-stays-unimplemented-until-the-embedder-port) | `memory.search` stays unimplemented until the Embedder port | Memory |
 
 ---
 
@@ -314,6 +318,30 @@ Lightweight decision log (ADR-lite). Each entry states the decision, why it was 
 - **Decision:** `runForecasts` upserts the active alert of every triggered kind (titles from deterministic templates, `explanation` null until phase 4). It resolves the active (`open` or `ack`) alert of a kind whose detector ran conclusively and did not trigger. Two cases leave alerts untouched instead: insufficient data (driver `insufficient_data`), and a detector that triggered with no evidence to cite (driver `missing_evidence`, added by the engine). The second case cannot raise an alert either, because every alert needs evidence, but silence about a problem is not proof that it is gone, so it must not resolve one. Detectors therefore report what they measured and never fold "no records to cite" into `triggered`. A forecast identical to the latest one of the same UTC day is not inserted again, so reruns are idempotent. A project that fails is reported in the summary (sanitized error) and the others continue. Demo boot runs `syncProjects` then `runForecasts`, and fails if either fails.
 - **Why:** alerts must not outlive the condition that raised them, but missing data is not evidence that a problem went away. Before this, a triggered detector whose evidence list came back empty fell through to the resolve branch and silently closed a live alert.
 - **Tradeoff:** a flapping signal resolves and re-creates alerts (a new `open` alert each time, D-029); hysteresis can come later.
+
+### D-043 — Memory item ids are derived, not generated
+
+- **Decision:** a `MemoryItem.id` is a pure hash of `(projectId, kind, rule, primary record key)` (`memoryItemId`, `modules/memory/domain/ids.ts`), shaped like a version-5 UUID. No `node:crypto`, no randomness, no clock: the domain stays runtime-agnostic and the same fact always lands on the same row.
+- **Why:** the repository keys memory items by `id`, so `buildMemory` is only idempotent if ids are. With generated ids, every rerun would duplicate the project's whole memory.
+- **Tradeoff:** the hash is a seeded FNV-1a quadruple, not SHA-1, so it is not cryptographic. It only has to keep the few dozen records of one project apart; if a collision ever matters, swap the digest and accept a one-time id churn.
+
+### D-044 — Memory rules are deterministic and the LLM is a seam
+
+- **Decision:** phase 5 detects everything rule-based: five pending rules (Done without a merged PR, merged PR without a closed issue, PR stuck past the review/age threshold, in-progress issue without commits, unanswered Jira question), resolved work with its evidence chain, decisions from ADR documents, and risks from "blocked on" comments. `next_step` is deliberately EMPTY: no record states a future commitment a rule can read without guessing, and an invented next step is exactly the claim the evidence rule exists to prevent. The Claude extraction plugs into `MemoryNarrator` (`modules/memory/application/memory-narrator.ts`), whose output will pass the same `restrictEvidenceTo` + `withEvidence` guards.
+- **Why:** "evidence or it didn't happen" (§1). A rule can always name the record it read; a model cannot be trusted to, so its output has to survive the same gate.
+- **Tradeoff:** summaries are template strings, so they read mechanically until phase 4 rewrites them. Thresholds (48 h review wait, 7 days open, 5 working days idle, 48 h unanswered) are duplicated from `ForecastOptions` rather than shared, because the two modules own different questions; promote one constant into `@/shared/domain` if they ever need to move together.
+
+### D-045 — The pending rule lives in the summary prefix
+
+- **Decision:** `MemoryItem` has no rule column, so a pending summary is templated as `"<rule label> — <detail>"` and the UI/digest group by that prefix (`pendingRuleOf`). The separator and the labels are part of the contract.
+- **Why:** the alternative was widening the shared `MemoryItem` schema (and the Postgres table) with a column only one module reads. Memory items are already text-first; the prefix keeps the shared spine unchanged.
+- **Tradeoff:** renaming a rule label orphans previously stored items into an "Other" group until the next `buildMemory` run rewrites them.
+
+### D-046 — `memory.search` stays unimplemented until the Embedder port
+
+- **Decision:** `buildMemory` writes items WITHOUT embeddings. The in-memory `memory.search` contract is unchanged and simply matches nothing, because an item without a vector never matches. Phase 6/7 adds the Embedder port, embeds each item on write, and wires semantic search into Ask Radar.
+- **Why:** embeddings mean an API call per item on demo boot, which would make the container slow to build for a feature nothing reads yet.
+- **Tradeoff:** chat cannot search memory semantically until that phase; it can still read memory items per project through the repository.
 
 ## Known debt (phase 3)
 

@@ -11,6 +11,7 @@ import {
   createUnavailableSources,
 } from "@/adapters/unavailable";
 import { runForecasts } from "@/modules/forecast/application/run-forecasts";
+import { buildMemory } from "@/modules/memory/application/build-memory";
 import { syncProjects } from "@/modules/ingestion/application/sync-projects";
 import { getEnv, type Env } from "@/shared/config/env";
 import { toIsoDate } from "@/shared/domain";
@@ -70,9 +71,10 @@ export function getAppConfig(): AppConfig {
 /**
  * Demo boot: build the scenario anchored to today, then run it through the
  * real sync pipeline (sources -> sync use case -> repository), exactly like a
- * live cron sync would, then run the forecast engine so the container starts
- * with forecasts and alerts. Repository ids are deterministic, so every instance
- * booted on the same day agrees on alert ids.
+ * live cron sync would, then run the forecast engine and the memory pipeline
+ * so the container starts with forecasts, alerts, and memory items. Repository
+ * ids are deterministic, so every instance booted on the same day agrees on
+ * alert and memory item ids.
  */
 async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Container> {
   const dataset = buildDemoDataset(clock.now());
@@ -100,6 +102,16 @@ async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Cont
   if (forecastFailures.length > 0) {
     throw new Error(
       `Demo forecasts failed: ${forecastFailures
+        .map((project) => `${project.projectName}: ${project.error}`)
+        .join("; ")}`,
+    );
+  }
+
+  const memory = await buildMemory({ repo, clock });
+  const memoryFailures = memory.projects.filter((project) => project.error !== null);
+  if (memoryFailures.length > 0) {
+    throw new Error(
+      `Demo memory failed: ${memoryFailures
         .map((project) => `${project.projectName}: ${project.error}`)
         .join("; ")}`,
     );
