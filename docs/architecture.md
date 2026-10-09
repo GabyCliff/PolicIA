@@ -10,6 +10,7 @@ Radar is one Next.js app on Vercel, organized as a hexagon: pure domain modules 
 | Find where code runs | [Containers](#containers) |
 | Follow a nightly sync end to end | [Sync, forecast, and alert](#sync-forecast-and-alert) |
 | Follow a chat question end to end | [Ask Radar](#ask-radar) |
+| See the tables and how they relate | [Data model](#data-model) |
 | Know where new code goes | [Folder structure](#folder-structure) and [Layering rules](#layering-rules) |
 
 ## System context
@@ -73,7 +74,7 @@ C4Container
   Rel(adapters, voyage, "REST")
 ```
 
-In demo mode the adapters box resolves to in-memory fakes, so no arrow leaves the app.
+In demo mode the adapters box resolves to in-memory fakes, so no arrow leaves the app. On first access each UTC day the composition root builds the scenario for that day and runs it through the same sync use case the cron uses, into an in-memory repository ([D-019](./decisions.md#d-019--demo-boots-through-the-real-sync-pipeline), [D-033](./decisions.md#d-033--the-demo-container-is-rebuilt-per-utc-day)). In live mode (phase 9), user requests read through a request-scoped repository so RLS applies; the service-role repository serves only cron, sync, and admin jobs ([D-030](./decisions.md#d-030--live-reads-use-a-request-scoped-rls-repository)).
 
 ## Sync, forecast, and alert
 
@@ -146,6 +147,105 @@ sequenceDiagram
   UI-->>Lead: Answer with clickable citation chips
 ```
 
+## Data model
+
+Postgres on Supabase (`supabase/migrations`). Every table synced from a source has a natural-key unique constraint (`issues (project_id, key)`, `pull_requests (project_id, number)`, `commits (project_id, sha)`, ...), so syncs are idempotent upserts. RLS is on for every table: members read their projects' rows, owners and leads make the two user writes, the service role does everything else, and anon gets nothing ([D-025](./decisions.md#d-025--sync-runs-are-per-project-with-sanitized-errors), [D-026](./decisions.md#d-026--llm-usage-is-admin-only), [D-028](./decisions.md#d-028--owners-and-leads-write-viewers-read)).
+
+```mermaid
+erDiagram
+  projects ||--o{ project_members : "has"
+  projects ||--o{ sprints : "plans"
+  projects ||--o{ issues : "tracks"
+  sprints |o--o{ issues : "contains"
+  issues ||--o{ issue_events : "changelog"
+  issues ||--o{ issue_comments : "discussion"
+  issues ||--o{ worklogs : "time spent"
+  issues ||--o{ issue_snapshots : "daily cache"
+  projects ||--o{ pull_requests : "repo"
+  projects ||--o{ commits : "repo"
+  projects ||--o{ capacity : "per person per day"
+  projects ||--o{ docs : "Flocktools"
+  projects ||--o{ forecasts : "computed"
+  projects ||--o{ alerts : "raised"
+  projects ||--o{ memory_items : "remembered"
+  projects ||--o{ reports : "generated"
+  projects ||--o{ sync_runs : "freshness per source"
+
+  projects {
+    uuid id PK
+    text jira_key UK
+    text github_repo
+    numeric budget_amount
+    numeric hourly_rate
+    date start_date
+    date end_date
+    text forecast_unit
+    int wip_limit
+  }
+  sprints {
+    uuid id PK
+    uuid project_id FK
+    text external_id
+    timestamptz start_at
+    timestamptz end_at
+    text state
+    numeric committed_points
+  }
+  issues {
+    uuid id PK
+    uuid project_id FK
+    uuid sprint_id FK
+    text key
+    text status_category
+    numeric points
+    bool requires_code
+  }
+  issue_events {
+    uuid issue_id FK
+    text field
+    text from_value
+    text to_value
+    timestamptz at
+  }
+  pull_requests {
+    uuid project_id FK
+    int number
+    text state
+    text_array linked_issue_keys
+  }
+  commits {
+    uuid project_id FK
+    text sha
+    text_array linked_issue_keys
+  }
+  alerts {
+    uuid id PK
+    text kind
+    text severity
+    numeric confidence
+    date eta
+    jsonb evidence
+    text status
+    text active_key UK
+  }
+  memory_items {
+    uuid id PK
+    text kind
+    jsonb evidence
+    vector embedding
+  }
+```
+
+Not drawn: `llm_calls` (usage and cost, admin-only) has no project. `sync_runs` holds one row per project and source per sync, with a sanitized error reason. PRs and commits link to issues through `linked_issue_keys` (uppercase keys parsed from titles, branches, and messages), not foreign keys, because they can reference issues that were never synced.
+
+Modeling choices worth knowing:
+
+- **Rows stay inside their project.** Children reference parents with composite foreign keys (`(project_id, issue_id) -> issues (project_id, id)`), so RLS on `project_id` can never expose another project's record ([D-027](./decisions.md#d-027--composite-foreign-keys-keep-rows-inside-their-project)).
+- **Evidence is JSON on the claim.** Alerts and memory items store `evidence jsonb` (at least one pointer, enforced by a check constraint), not a join table: evidence is immutable and always read with its claim.
+- **Burn-up comes from events.** Scope and progress over time are rebuilt from `issues` + `issue_events`; `issue_snapshots` is only a live-mode cache ([D-018](./decisions.md#d-018--burn-up-is-derived-from-issues-and-events)).
+- **One active alert per kind.** A generated `active_key` (`project_id:kind` while open or acknowledged) has a plain unique index that supabase-js can target with `onConflict`; resolved alerts drop out of it, so a re-detection opens a new alert ([D-029](./decisions.md#d-029--alerts-upsert-on-a-generated-active-key)).
+- **Semantic search.** `memory_items.embedding extensions.vector(1024)` with an HNSW cosine index; `match_memory_items(project_id, embedding, k)` runs as the caller, so RLS still applies, and follows the same rules as the in-memory repository (k <= 0 returns nothing, at most 50 rows, zero vectors never match).
+
 ## Folder structure
 
 Screaming structure: top-level folders name business capabilities, not technical layers. Every module, including each cockpit submodule, has the same three layers.
@@ -157,6 +257,7 @@ src/
     api/cron/sync/           Vercel Cron entry point
   composition-root.ts        The only place that picks demo or live adapters
   modules/
+    ingestion/application/   syncProjects: sources -> repository, sync runs
     forecast/{domain,application,ui}/
     memory/{domain,application,ui}/
     cockpit/
@@ -164,14 +265,18 @@ src/
       metrics/{domain,application,ui}/
       chat/{domain,application,ui}/
   shared/
-    domain/                  Evidence, Alert, Project, Sprint, Issue, ...
-    ports/                   Clock, IssueTracker, CodeHost, LLM, repositories, ...
+    domain/                  Evidence, Alert, Project, Sprint, Issue, ... (Zod schemas + pure helpers)
+    ports/                   Clock, RadarRepository, IssueTracker, CodeHost, CalendarSource, DocsSource
     config/                  Validated, server-only env
   adapters/
-    jira/ github/ calendar/ flocktools/ llm/ supabase/ demo/
+    demo/                    Scenario builder, demo sources, in-memory repository
+    supabase/                Migration tests today; repository in phase 9
+    unavailable/             Live-mode placeholders until phase 9
+    shared/                  Helpers for adapters (stable UUIDs and SHAs)
+    jira/ github/ calendar/ flocktools/ llm/
   components/                App shell and shadcn/ui primitives
   lib/                       Framework-level helpers (http auth, cn)
-supabase/migrations/         SQL migrations
+supabase/migrations/         SQL migrations (validated on PGlite in tests)
 scripts/                     Operational scripts (seed)
 test/                        Test helpers and stubs (not shipped)
 ```

@@ -4,7 +4,7 @@ Radar is a cockpit for engineering leaders. It **anticipates** delivery risks wi
 
 Out of the box it runs in **demo mode**: seeded data, no accounts, no API keys.
 
-> **Status: phase 1 (scaffold).** The app shell, env validation, health check, and the authenticated cron endpoint work today. Everything else below is marked with the phase that delivers it.
+> **Status: phase 2 (data spine).** The app shell, env validation, health check, and the authenticated cron endpoint work, and demo mode now boots a seeded three-project scenario through the real sync pipeline. Everything else below is marked with the phase that delivers it.
 
 ## Quickstart
 
@@ -26,11 +26,13 @@ Check it is up: `curl http://localhost:3000/api/health` returns `{"status":"ok",
 | Validated server-only env (`DEMO_MODE`, live-mode requirements) | Available |
 | `GET /api/health` | Available |
 | `GET /api/cron/sync` (Bearer `CRON_SECRET`, currently a no-op) | Available |
-| Demo seed scenario and portfolio cards | Planned (phase 2 and 5) |
+| Demo scenario (3 projects) synced into an in-memory repository | Available (data only; UI in phase 5) |
+| Supabase schema, RLS, and pgvector search (`supabase/migrations`) | Available (validated on PGlite in tests) |
+| Portfolio cards | Planned (phase 5) |
 | Forecast engine and alerts | Planned (phase 3) |
 | AI explanations with deterministic template fallback | Planned (phase 4) |
 | Memory, Ask Radar chat, reports | Planned (phases 6 to 8) |
-| Live mode: Supabase persistence, magic-link auth, RLS | Planned (phase 2 onward) |
+| Live mode: Supabase repository, magic-link auth | Planned (phase 9) |
 | Real Jira / GitHub / Calendar / Flocktools ingestion | Planned (phase 9) |
 
 ## Scripts
@@ -42,7 +44,7 @@ Check it is up: `curl http://localhost:3000/api/health` returns `{"status":"ok",
 | `npm run lint` | ESLint, including the hexagonal import rules |
 | `npm run typecheck` | Generate Next.js route types, then `tsc --noEmit` |
 | `npm test` / `npm run test:watch` | Vitest (single run / watch) |
-| `npm run seed:supabase` | Seed a live Supabase project. Planned (phase 2); today it exits with an error |
+| `npm run seed:supabase` | Seed a live Supabase project. Planned (phase 9); today it exits with an error |
 
 ## Docs
 
@@ -61,4 +63,4 @@ Demo mode needs nothing but a Vercel project.
    - Add `CRON_SECRET` (at least 16 characters, for example `openssl rand -hex 32`) so the cron job in `vercel.json` can authenticate. It runs daily, within the 07:00 UTC hour (Vercel Hobby precision).
 4. Deploy.
 
-> **Do not deploy live mode with real data yet.** `DEMO_MODE=false` currently only validates that the Supabase variables are present: there is no login, no RLS, and no Supabase wiring until the planned phases land. Keep deployments on `DEMO_MODE=true`.
+> **Do not deploy live mode with real data yet.** `DEMO_MODE=false` currently only validates that the Supabase variables are present: there is no login and no Supabase wiring (every data access fails with a "lands in phase 9" error) until the planned phases land. Keep deployments on `DEMO_MODE=true`.
