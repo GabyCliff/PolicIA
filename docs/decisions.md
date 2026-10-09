@@ -42,6 +42,12 @@ Lightweight decision log (ADR-lite). Each entry states the decision, why it was 
 | [D-034](#d-034--stalled-means-five-working-days-without-commits) | Stalled means 5 working days without commits | Forecast |
 | [D-035](#d-035--refined-schemas-export-a-plain-fields-variant) | Refined schemas export a plain Fields variant (Zod 4) | Domain |
 | [D-036](#d-036--sources-are-normalized-at-the-adapter-boundary) | Sources are normalized at the adapter boundary | Integrations |
+| [D-037](#d-037--sprint-forecast-bootstraps-daily-throughput) | Sprint forecast bootstraps daily throughput; the engine is the reference model | Forecast |
+| [D-038](#d-038--capacity-scales-by-the-elapsed-day-baseline) | Capacity scales by the elapsed-day baseline, not team x 8 h | Forecast |
+| [D-039](#d-039--budget-burn-is-an-ewma-with-alpha-03) | Budget burn is an EWMA with alpha 0.3 | Forecast |
+| [D-040](#d-040--scope-creep-is-net-growth-over-15-percent) | Scope creep is net growth over 15% of the commitment | Forecast |
+| [D-041](#d-041--flow-signal-thresholds-and-severity-mapping) | Flow signal thresholds and the severity/confidence mapping | Forecast |
+| [D-042](#d-042--alerts-auto-resolve-when-a-conclusive-detector-stops-firing) | Alerts auto-resolve when a conclusive detector stops firing | Alerts |
 
 ---
 
@@ -265,3 +271,62 @@ Lightweight decision log (ADR-lite). Each entry states the decision, why it was 
 - **Decision:** adapters emit timestamps as UTC ISO strings (`toISOString()`; Jira's `+0000` offsets included), all-day calendar events on UTC-midnight bounds, full 40-character commit SHAs (DB check constraint), and issue keys only in uppercase (`extractIssueKeys` ignores `bcn-123` and `api-2`). Failures are `SourceUnavailableError` with a safe reason. "New Feature" and "Feature" count as code-requiring issue types.
 - **Why:** downstream code compares timestamps as strings, computes capacity per UTC day, and links PRs to issues by key; lowercase matching produced false links from ordinary words.
 - **Tradeoff:** lowercase branch names (`bcn-123-fix`) no longer link a PR on their own; titles must carry the key.
+
+### D-037 — Sprint forecast bootstraps daily throughput
+
+- **Decision:** `P(complete by sprint end)` comes from 10,000 bootstrap runs. Each run walks the remaining working days, today included, and draws one daily throughput per day. Draws are uniform with replacement from every working day of the last 6 closed sprints, zero days included. A done issue counts on the working day it was resolved (weekend resolutions count on the previous working day), in the project's unit. Each draw is scaled by that day's capacity factor (D-038). Runs continue 30 working days past the sprint end, only to date the completion: P50/P85 are the days reached by 50%/85% of runs (`null` beyond the horizon), and the expected date is the mean completion day of the runs that finish. The seed is `projectId:asOf` (D-009). The burn-up cone shows the cumulative done reached by 50% and 85% of runs. The unit falls back to issue count when any active-sprint or sampled done issue has no estimate (D-007). Fewer than 2 closed sprints, or a history with no completed work, is inconclusive. This engine is the reference model `expectations.ts` describes: on the 7 weekday anchors Beacon lands at 0.373-0.382, Atlas at 0.755-0.763, and Cobalt at 0.68-0.70. It takes about 5 ms per project.
+- **Why:** bootstrap sampling keeps the real shape of the team's days (zero days, big merges) without assuming a distribution. One function serves as both engine and calibration model, so the demo cannot drift from what the product computes (D-021).
+- **Tradeoff:** days are drawn independently, so streaks are not modeled and the band can be slightly narrow. Issue count assumes similar sizes.
+
+### D-038 — Capacity scales by the elapsed-day baseline
+
+- **Decision:** capacity factor = team available hours that day / baseline, clamped at 0. The baseline is the mean team hours of the sprint's elapsed working days. When no elapsed day has capacity data, it falls back to team size x 8 h (driver `capacity_baseline_nominal`). Without any capacity data every factor is 1 (driver `capacity_unavailable`, confidence -0.1). Days without capacity entries count as normal.
+- **Why:** historical throughput already reflects ordinary meetings (stand-ups, planning, retros), so the comparison should be against a normal day of this team, not a meeting-free 8 h day. Using team x 8 h as the primary baseline drops Beacon to about 0.32 (outside the ±0.03 calibration) and penalizes every project for its routine meetings.
+- **Tradeoff:** a sprint whose elapsed days were unusually light (holidays early on) inflates the factors of later days.
+
+### D-039 — Budget burn is an EWMA with alpha 0.3
+
+- **Decision:** spend = worklog hours x hourly rate. The daily burn is an EWMA (alpha 0.3, seeded with the first value) of hours per working day, from the first day with logged time to yesterday (weekend logs count on the previous working day). The projection keeps that burn constant from today. Exhaustion is the working day the remaining budget is used up (ceil), or, when the budget is already spent, the historical day spend crossed it. The detector triggers when exhaustion is before `endDate`, and also whenever the budget is already spent, including when that happened after the end date (an overspent project is over budget whether or not it is still running); for an ended project, projected spend is the actual spend. Severity buckets by calendar days early: already exhausted or 10 or more days critical, 5 or more high, 2 or more medium, else low. Confidence = 0.9 x min(1, history days / 20) x (1 - CV of the last 15 days, floored at 0.5). No worklogs, budget, or rate is inconclusive. Cobalt runs out 14 days early on weekday anchors (12-13 on weekends).
+- **Why:** with alpha 0.3, about 97% of the weight sits on the last 10 working days, so the projection follows a ramp-up (Cobalt's two late joiners) within two weeks while one odd day moves it little.
+- **Tradeoff:** a burn that is still ramping is under-projected; seasonality and planned staffing changes are ignored.
+
+### D-040 — Scope creep is net growth over 15 percent
+
+- **Decision:** scope at any instant is rebuilt from the changelog (D-018). Committed = scope at the sprint's start instant. Added = issues pulled in plus raised estimates after the start; removed = issues moved out plus lowered estimates. The detector triggers when (added - removed) / committed > 15%. Severity: above 50% critical, above 30% high, else medium. Confidence is 0.9, or 0.7 when counting issues instead of points. Evidence is the sprint report plus one changelog entry per change. Beacon: +13 on 27 committed (48%, high).
+- **Why:** net growth is what threatens the commitment; swapping equal work in and out is replanning, not creep.
+- **Tradeoff:** a large addition offset by a large removal stays silent even though the team changed course.
+
+### D-041 — Flow signal thresholds and severity mapping
+
+- **Decision:** each signal describes today's state, so `eta` is today and confidence is 0.9.
+  - **WIP:** active-sprint issues in the `in_progress` category above `wipLimit`. At least 2x the limit is critical, 1.5x high, otherwise medium.
+  - **Stale review:** open PRs without a first review for more than 48 h (calendar hours). Three or more PRs, or one waiting 2x the threshold, is high; otherwise medium.
+  - **Stalled:** code-requiring `in_progress` issues with at least 5 full working days since the last linked commit, or since work started when there is none (D-034). 2x the threshold is high, otherwise medium.
+  - **Reopen rate:** resolutions cleared vs. set in the last 20 working days, above 15% with at least 5 resolutions (otherwise inconclusive). 2x the threshold is high, otherwise medium.
+  - **Sprint risk:** P < 0.5 triggers; below 0.3 critical, otherwise high. Confidence = 0.9 x (sprints used / 6) x (1 - CV of sprint totals, floored at 0.5).
+
+  Every threshold is a `ForecastOptions` field.
+- **Why:** simple, explainable rules whose numbers go to the LLM as drivers unchanged.
+- **Tradeoff:** fixed thresholds do not adapt to team size; a team with a WIP limit of 5 and 6 people is noisy until the limit is tuned.
+
+### D-042 — Alerts auto-resolve when a conclusive detector stops firing
+
+- **Decision:** `runForecasts` upserts the active alert of every triggered kind (titles from deterministic templates, `explanation` null until phase 4). It resolves the active (`open` or `ack`) alert of a kind whose detector ran conclusively and did not trigger. Two cases leave alerts untouched instead: insufficient data (driver `insufficient_data`), and a detector that triggered with no evidence to cite (driver `missing_evidence`, added by the engine). The second case cannot raise an alert either, because every alert needs evidence, but silence about a problem is not proof that it is gone, so it must not resolve one. Detectors therefore report what they measured and never fold "no records to cite" into `triggered`. A forecast identical to the latest one of the same UTC day is not inserted again, so reruns are idempotent. A project that fails is reported in the summary (sanitized error) and the others continue. Demo boot runs `syncProjects` then `runForecasts`, and fails if either fails.
+- **Why:** alerts must not outlive the condition that raised them, but missing data is not evidence that a problem went away. Before this, a triggered detector whose evidence list came back empty fell through to the resolve branch and silently closed a live alert.
+- **Tradeoff:** a flapping signal resolves and re-creates alerts (a new `open` alert each time, D-029); hysteresis can come later.
+
+## Known debt (phase 3)
+
+Found in review of the forecast engine, deliberately deferred so the three modules can be finished end to end first. Each is a real behaviour gap, not a style preference.
+
+| # | Debt | Where |
+|---|------|-------|
+| 1 | Scope creep and sprint completion disagree for issues created directly in the sprint: real Jira writes no changelog entry when the sprint field is set at creation, so such issues raise `current` without producing a `ScopeChange`. Fix: synthesize an `added` change at `createdAt`, then assert `net === current - committed`. | `domain/sprint-scope.ts`, `domain/scope-creep.ts` |
+| 2 | An active sprint whose end date has passed gets an `eta` in the past and an empty burn-up cone, although P50/P85 dates are computed from the horizon. | `domain/sprint-completion.ts` |
+| 3 | `doneByDay` is revisionist: it uses each issue's current size and current resolution, so a re-estimate after a resolution can push a past day above the scope line, and a reopened issue never shows as done. It should be rebuilt point-in-time from the changelog. | `domain/sprint-scope.ts` |
+| 4 | Today is counted twice: work already resolved today is in `done`, and today also gets a full simulated day of throughput. | `domain/sprint-completion.ts` |
+| 5 | `cumulativeP50` / `cumulativeP85` name opposite tails (median vs. 15th percentile), which reads as a contradiction. Rename before any chart binds to them. | `domain/monte-carlo.ts` |
+| 6 | Throughput sampling tradeoffs are undocumented: weekend resolutions attributed to the previous working day, samples outside sprint windows dropped, overlapping history windows double-counting a day, and current (not point-in-time) estimates used for history. | `domain/throughput.ts`, D-037 |
+| 7 | The domain relies on the repository's ordering without re-sorting, so a differently ordered implementation would shift sample order and therefore the seeded draws. Sort by a stable key in the domain and state the guarantee on the port. | `domain/*`, `shared/ports/radar-repository.ts` |
+| 8 | The sprint probabilities have no engine-independent anchor: `expectations.ts` and the engine are one implementation, so the calibration test asserts the engine against itself. Cobalt's budget already has a hand-computed anchor in `dataset.test.ts`; sprint risk needs the same. D-037's "cannot drift" claim is too strong until it does. | `adapters/demo/scenario/*`, D-037 |
+

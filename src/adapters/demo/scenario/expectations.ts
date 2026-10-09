@@ -3,7 +3,9 @@
  * the forecast engine against these numbers and later phases use the keys
  * to assert their detectors; `dataset.test.ts` keeps the dataset honest.
  *
- * Reference model used to tune the numbers (phase 3 may refine it):
+ * Reference model used to tune the numbers. Since phase 3 the forecast
+ * engine (`src/modules/forecast/domain`, decisions D-037 to D-039) IS this
+ * model, and `forecast-pipeline.test.ts` asserts these numbers against it:
  * - Sprint: bootstrap 10,000 runs over the daily throughput (forecast unit
  *   resolved per working day) of the last 6 closed sprints; each remaining
  *   day is scaled by the team's available hours that day divided by the mean

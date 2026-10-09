@@ -10,6 +10,7 @@ import {
   createUnavailableRepository,
   createUnavailableSources,
 } from "@/adapters/unavailable";
+import { runForecasts } from "@/modules/forecast/application/run-forecasts";
 import { syncProjects } from "@/modules/ingestion/application/sync-projects";
 import { getEnv, type Env } from "@/shared/config/env";
 import { toIsoDate } from "@/shared/domain";
@@ -69,7 +70,8 @@ export function getAppConfig(): AppConfig {
 /**
  * Demo boot: build the scenario anchored to today, then run it through the
  * real sync pipeline (sources -> sync use case -> repository), exactly like a
- * live cron sync would. Repository ids are deterministic, so every instance
+ * live cron sync would, then run the forecast engine so the container starts
+ * with forecasts and alerts. Repository ids are deterministic, so every instance
  * booted on the same day agrees on alert ids.
  */
 async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Container> {
@@ -91,6 +93,16 @@ async function buildDemoContainer(config: AppConfig, clock: Clock): Promise<Cont
       .map((run) => run.error ?? `${run.source}: ${run.status}`)
       .join("; ");
     throw new Error(`Demo data failed to sync: ${failures}`);
+  }
+
+  const forecasts = await runForecasts({ repo, clock });
+  const forecastFailures = forecasts.projects.filter((project) => project.error !== null);
+  if (forecastFailures.length > 0) {
+    throw new Error(
+      `Demo forecasts failed: ${forecastFailures
+        .map((project) => `${project.projectName}: ${project.error}`)
+        .join("; ")}`,
+    );
   }
 
   return { ...config, clock, repo, sources };

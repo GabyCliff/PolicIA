@@ -95,6 +95,19 @@ describe("getContainer", () => {
         ["docs", "ok"],
       ]);
     }
+
+    // Boot also runs the forecast engine: alerts exist with evidence.
+    const alertKinds = async (jiraKey: string) => {
+      const project = projects.find((item) => item.jiraKey === jiraKey);
+      const alerts = await container.repo.alerts.byProject(project?.id ?? "");
+      for (const alert of alerts) expect(alert.evidence.length).toBeGreaterThan(0);
+      return alerts.map((alert) => alert.kind);
+    };
+    expect(await alertKinds("BCN")).toContain("sprint_goal_risk");
+    expect(await alertKinds("CBL")).toContain("budget_overrun");
+    expect(await alertKinds("ATL")).toEqual([]);
+    const beacon = projects.find((item) => item.jiraKey === "BCN");
+    expect(await container.repo.forecasts.latest(beacon?.id ?? "", "sprint_completion")).not.toBeNull();
   });
 
   it("returns the same promise and instance on repeated calls within a day", async () => {

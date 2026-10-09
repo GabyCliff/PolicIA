@@ -9,6 +9,7 @@ Radar is one Next.js app on Vercel, organized as a hexagon: pure domain modules 
 | See who uses Radar and what it talks to | [System context](#system-context) |
 | Find where code runs | [Containers](#containers) |
 | Follow a nightly sync end to end | [Sync, forecast, and alert](#sync-forecast-and-alert) |
+| See how forecasts and alerts are computed | [Forecast engine](#forecast-engine) |
 | Follow a chat question end to end | [Ask Radar](#ask-radar) |
 | See the tables and how they relate | [Data model](#data-model) |
 | Know where new code goes | [Folder structure](#folder-structure) and [Layering rules](#layering-rules) |
@@ -118,6 +119,21 @@ sequenceDiagram
   end
   Route-->>Cron: 202 with sync stats
 ```
+
+## Forecast engine
+
+`src/modules/forecast` turns synced data into forecasts and alerts. The math is pure and seeded; the use case only does IO through ports.
+
+| Piece | Where | What it does |
+|-------|-------|--------------|
+| `evaluateProject` | `domain/engine.ts` | Runs every detector on a `ProjectSnapshot` (all records plus an injected `now`) |
+| Sprint completion | `domain/sprint-completion.ts`, `monte-carlo.ts`, `throughput.ts`, `sprint-scope.ts` | Bootstrap Monte Carlo (10,000 runs, seed `projectId:day`) with capacity scaling; P, expected/P50/P85 dates, burn-up with cone ([D-037](./decisions.md#d-037--sprint-forecast-bootstraps-daily-throughput), [D-038](./decisions.md#d-038--capacity-scales-by-the-elapsed-day-baseline)) |
+| Budget runway | `domain/budget.ts` | EWMA daily burn, exhaustion date, % over at the end date, spend series ([D-039](./decisions.md#d-039--budget-burn-is-an-ewma-with-alpha-03)) |
+| Scope creep | `domain/scope-creep.ts` | Net scope added since the sprint start vs. commitment ([D-040](./decisions.md#d-040--scope-creep-is-net-growth-over-15-percent)) |
+| Flow signals | `domain/flow.ts` | WIP over limit, stale reviews, stalled issues, reopen rate ([D-041](./decisions.md#d-041--flow-signal-thresholds-and-severity-mapping)) |
+| `runForecasts` | `application/run-forecasts.ts` | Loads snapshots, stores `sprint_completion` / `budget_runway` forecasts, upserts triggered alerts, and auto-resolves cleared ones ([D-042](./decisions.md#d-042--alerts-auto-resolve-when-a-conclusive-detector-stops-firing)) |
+
+Every detector returns a `DetectorResult`: drivers carry the exact numbers the LLM may cite, and evidence points at the issues, PRs, commits, worklog tabs, and sprint reports behind them. The demo calibration (`src/adapters/demo/forecast-pipeline.test.ts`) asserts the scripted story on every weekday anchor.
 
 ## Ask Radar
 
