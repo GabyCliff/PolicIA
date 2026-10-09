@@ -121,6 +121,38 @@
   }
 }
 
+/*
+ * Cockpit chart palette. Recharts needs explicit colour strings, and its
+ * defaults are light-biased, so every series reads from a variable that the
+ * dark block below redefines. Hues are kept distinct in both themes so the
+ * charts never rely on a single channel.
+ */
+:root {
+  --radar-done: oklch(0.52 0.16 255);
+  --radar-scope: oklch(0.5 0.02 260);
+  --radar-cone: oklch(0.52 0.16 255);
+  --radar-actual: oklch(0.5 0.14 160);
+  --radar-plan: oklch(0.55 0.02 260);
+  --radar-projection: oklch(0.6 0.16 50);
+  --radar-danger: oklch(0.52 0.21 27);
+  --radar-grid: oklch(0.9 0 0);
+  --radar-axis: oklch(0.45 0 0);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --radar-done: oklch(0.75 0.14 255);
+    --radar-scope: oklch(0.72 0.02 260);
+    --radar-cone: oklch(0.75 0.14 255);
+    --radar-actual: oklch(0.76 0.14 160);
+    --radar-plan: oklch(0.65 0.02 260);
+    --radar-projection: oklch(0.78 0.15 60);
+    --radar-danger: oklch(0.7 0.19 22);
+    --radar-grid: oklch(1 0 0 / 12%);
+    --radar-axis: oklch(0.72 0 0);
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
