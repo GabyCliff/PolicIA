@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -15,16 +16,20 @@ function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function MainNav({ className }: { className?: string }) {
-  const pathname = usePathname();
-
+function NavLinks({
+  pathname,
+  className,
+}: {
+  pathname: string | null;
+  className?: string;
+}) {
   return (
     <nav
       aria-label="Main"
       className={cn("flex items-center gap-1 overflow-x-auto text-sm", className)}
     >
       {NAV_ITEMS.map(({ href, label }) => {
-        const active = isActive(pathname, href);
+        const active = pathname !== null && isActive(pathname, href);
         return (
           <Link
             key={href}
@@ -40,5 +45,22 @@ export function MainNav({ className }: { className?: string }) {
         );
       })}
     </nav>
+  );
+}
+
+function ActiveNavLinks({ className }: { className?: string }) {
+  return <NavLinks pathname={usePathname()} className={className} />;
+}
+
+/**
+ * The active item depends on the URL, which is only known at request time on
+ * dynamic routes. The Suspense boundary lets the shell prerender with no item
+ * highlighted; the highlight streams in (Cache Components).
+ */
+export function MainNav({ className }: { className?: string }) {
+  return (
+    <Suspense fallback={<NavLinks pathname={null} className={className} />}>
+      <ActiveNavLinks className={className} />
+    </Suspense>
   );
 }
