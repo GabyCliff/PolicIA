@@ -343,6 +343,24 @@ Lightweight decision log (ADR-lite). Each entry states the decision, why it was 
 - **Why:** embeddings mean an API call per item on demo boot, which would make the container slow to build for a feature nothing reads yet.
 - **Tradeoff:** chat cannot search memory semantically until that phase; it can still read memory items per project through the repository.
 
+### D-047 — One LLM port with two capabilities, and an "unavailable" implementation
+
+- **Decision:** `@/shared/ports/llm.ts` exposes `explainAlert` and `chat` on a single `LlmPort`, with `available: boolean`. When `ANTHROPIC_API_KEY` is absent the composition root wires `createUnavailableLlm`, which returns a `failed`/`unavailable` outcome and a single `error` chat event instead of throwing.
+- **Why:** both capabilities are the same dependency (one client, one key, one model) and must degrade together. Making "no key" a port implementation rather than a branch in every caller is what keeps PROMPT §1 principle 4 ("demo-proof") true by construction: the demo boot, the alerts tab, and `/ask` all take the same code path with or without a key.
+- **Tradeoff:** the port carries a capability a given caller does not need, and `ChatTool.run` is erased to `(input: unknown)` so the port stays free of generic variance. `defineChatTool` restores type safety at the definition site by re-validating with the same Zod schema.
+
+### D-048 — Explanations are a follow-up use case with an input-hash cache, not part of `runForecasts`
+
+- **Decision:** `explainAlerts` runs after `runForecasts` (composition root, demo boot) and rewrites each active alert through `alerts.upsertForKind`, keeping the detector's `lastDetectedAt`. Results are cached by `model + JSON(input)` in a process-wide map, so a rerun on unchanged data neither calls nor writes. The LLM adapter owns generation, the grounding check, and the one corrective retry; the use case owns the deterministic template fallback and the `llmCalls` log.
+- **Why:** the forecast engine must stay pure and fast — it runs on every sync and in tests — while explanation is IO, is optional, and must be skippable. Keeping the fallback in the application layer (not the adapter) means the no-key adapter has nothing to fall back *to*, and the same template serves an API error, a refusal, and twice-ungrounded prose.
+- **Tradeoff:** the cache is per process, so a cold serverless instance re-pays for explanations it has already generated. Persisting the input hash would need a column on `alerts`; deferred until live mode.
+
+### D-049 — Grounding is strict: a bare day-of-month is not a grounded number
+
+- **Decision:** `checkGrounding` strips every rendering of an allowed date *before* extracting numbers, so `2026-10-22` and `Oct 22` pass whole, but a bare `22` does not — the day is only grounded as part of a date. Likewise, words that mix letters and digits (`P85`, `Q4`) must appear verbatim in the input text, and hex runs only count as commit SHAs when they contain a letter.
+- **Why:** the check exists to catch invented numbers, and the fallback (regenerate once, then template) is cheap. A permissive checker that lets a date fragment ground an unrelated count defeats the purpose.
+- **Tradeoff:** correct prose can be rejected ("the budget runs out on the 22nd"), which costs one extra call and may end on the template. That is the intended direction of the error.
+
 ## Known debt (phase 3)
 
 Found in review of the forecast engine, deliberately deferred so the three modules can be finished end to end first. Each is a real behaviour gap, not a style preference.
